@@ -1,0 +1,8 @@
+#include <stdio.h>
+#include <signal.h>
+#include "signals.h"
+
+void sig_ignore() {
+    printf("Wywołano funkcję 'sig_ignore()'\n");
+    signal(SIGUSR1, SIG_IGN);
+}
