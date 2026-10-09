@@ -1,16 +1,37 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-#define MAX_CLIENTS 10
-#define MAX_NAME 32
-#define MAX_MSG 256
+#include <sys/types.h>
 
-// typy poleceń
-#define CMD_LIST 1
-#define CMD_2ALL 2
-#define CMD_2ONE 3
-#define CMD_STOP 4
-#define CMD_ALIVE 5
-#define CMD_UNKNOWN 6
+// maksymalna liczba klientów
+#define MAX_CLIENTS 10
+
+// maksymalna długość wiadomości
+#define MAX_TEXT 256
+
+// dane do ftok()
+#define SERVER_PATH "./server.c"
+#define PROJECT_ID 1
+
+// typy wiadomości
+#define INIT 1
+#define MSG 2
+
+// struktura wiadomości
+typedef struct message {
+
+    // typ wiadomości
+    long mtype;
+
+    // id nadawcy
+    int sender_id;
+
+    // klucz kolejki klienta
+    key_t queue_key;
+
+    // treść wiadomości
+    char text[MAX_TEXT];
+
+} message;
 
 #endif

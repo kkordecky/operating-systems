@@ -3,20 +3,30 @@
 
 #include "common.h"
 
-typedef struct {
-    int sock;
-    char name[MAX_NAME];
+// struktura klienta
+typedef struct client {
+
+    // czy aktywny
     int active;
-    int alive;
-} Client;
 
-extern Client clients[];
+    // id klienta
+    int id;
 
-void send_to_client(int sock, char *msg);
-void send_to_all(char *msg, int sender_sock);
-int find_client(char *name);
-int add_client(int sock, char *name);
-void remove_client(int sock);
-int parse_command(char *buffer);
+    // id kolejki klienta
+    int queue_id;
+
+} client;
+
+// tablica klientów
+extern client clients[MAX_CLIENTS];
+
+// dodanie klienta
+int add_client(key_t key);
+
+// wysłanie do wszystkich
+void send_to_all(message *msg);
+
+// czyszczenie klientów
+void remove_clients();
 
 #endif

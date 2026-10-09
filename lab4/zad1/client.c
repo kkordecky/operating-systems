@@ -1,135 +1,144 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <signal.h>
-#include <arpa/inet.h>
+#include <string.h>
+
+#include <sys/ipc.h>
+#include <sys/msg.h>
 
 #include "common.h"
 #include "client_utils.h"
 
-int sock;
+// id kolejki klienta
+int client_queue;
 
 
-// ctrl+c
+// ===== ctrl+c =====
 void sigint_handler(int sig) {
-    stop_client();
+
+    // usunięcie kolejki klienta
+    msgctl(client_queue, IPC_RMID, NULL);
+
+    printf("\nKlient zamknięty\n");
+
+    exit(0);
 }
 
 
-int main(int argc, char *argv[]) {
+int main() {
 
-    // Weryfikacja liczby argumentów + instrukcja obsługi
-    if (argc != 4) {
+    // obsługa ctrl+c
+    signal(SIGINT, sigint_handler);
 
-        printf("Usage: %s NAME IP PORT\n",
-               argv[0]);
+    // ===== tworzenie kolejki klienta =====
 
-        return 1;
+    // unikalny klucz
+    key_t client_key = ftok(
+        "./client.c",
+        getpid()
+    );
+
+    // utworzenie kolejki
+    client_queue = msgget(
+        client_key,
+        IPC_CREAT | 0666
+    );
+
+    // ===== połączenie z serwerem =====
+
+    // klucz serwera
+    key_t server_key = ftok(
+        SERVER_PATH,
+        PROJECT_ID
+    );
+
+    // otwarcie kolejki serwera
+    int server_queue = msgget(
+        server_key,
+        0
+    );
+
+    // ===== INIT =====
+
+    message init_msg;
+
+    // typ INIT
+    init_msg.mtype = INIT;
+
+    // wysłanie klucza kolejki klienta
+    init_msg.queue_key = client_key;
+
+    // wysłanie INIT do serwera
+    msgsnd(
+        server_queue,
+        &init_msg,
+        sizeof(message) - sizeof(long),
+        0
+    );
+
+    // ===== odbiór ID =====
+
+    message reply;
+
+    // odbiór odpowiedzi serwera
+    msgrcv(
+        client_queue,
+        &reply,
+        sizeof(message) - sizeof(long),
+        INIT,
+        0
+    );
+
+    // zapis ID klienta
+    int client_id = reply.sender_id;
+
+    printf("Mój ID: %d\n", client_id);
+
+    // ===== fork =====
+
+    pid_t pid = fork();
+
+    // ===== proces dziecka =====
+    // odbiera wiadomości
+    if (pid == 0) {
+
+        receive_messages(client_queue);
     }
 
-    // Obsługa CTRL + C 
-    signal(SIGINT,
-           sigint_handler);
+    // ===== proces rodzica =====
+    // wysyła wiadomości
+    else {
 
-    // === Parsowanie argumentów ===
-    char *name = argv[1];
-    char *ip = argv[2];
-    int port = atoi(argv[3]);
-    // ================
+        char buffer[MAX_TEXT];
 
+        while (1) {
 
-    // ===== Tworzę socket IPv4 w trybie SOCK_STREAM === 
-    sock = socket(AF_INET,
-                  SOCK_STREAM,
-                  0);
+            // pobranie wiadomości
+            if (fgets(buffer, MAX_TEXT, stdin) == NULL) {
+                break;
+            }
 
-    
-    // ===== Tworzę strukturę opisującą adres === 
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET; /* address family: AF_INET */ 
-    server_addr.sin_port = htons(port); // numer_portu 
+            message msg;
 
-    inet_pton(AF_INET,
-              ip,
-              &server_addr.sin_addr);
-    // ===========================
+            // typ wiadomości
+            msg.mtype = MSG;
 
+            // id nadawcy
+            msg.sender_id = client_id;
 
-    // Łączę klienta z serwerem 
-    connect(sock,
-            (struct sockaddr *)&server_addr,
-            sizeof(server_addr));
+            // treść wiadomości
+            strcpy(msg.text, buffer);
 
-
-    // ===== wysłanie loginu =====
-    send(sock,
-         name,
-         strlen(name),
-         0);
-
-
-    // ===== sprawdzenie odpowiedzi =====
-    char response[MAX_MSG];
-
-    int bytes = recv(sock,
-                     response,
-                     MAX_MSG - 1,
-                     MSG_DONTWAIT);
-
-    if (bytes > 0) {
-
-        response[bytes] = '\0';
-
-        // jeśli serwer zwrócił ERROR
-        if (strncmp(response,
-                    "ERROR",
-                    5) == 0) {
-
-            printf("%s\n", response);
-
-            close(sock);
-
-            return 1;
+            // wysłanie wiadomości
+            msgsnd(
+                server_queue,
+                &msg,
+                sizeof(message) - sizeof(long),
+                0
+            );
         }
     }
-    
-
-
-    // ===== wątek odbierający =====
-    pthread_t tid;
-
-    pthread_create(&tid,
-                   NULL,
-                   receive_thread,
-                   NULL);
-
-
-    char buffer[MAX_MSG];
-
-    while (1) {
-
-        memset(buffer,
-               0,
-               MAX_MSG);
-
-        if (fgets(buffer,
-                  MAX_MSG,
-                  stdin) == NULL) {
-
-            break;
-        }
-
-        buffer[strcspn(buffer, "\n")] = 0;
-
-        send(sock,
-             buffer,
-             strlen(buffer),
-             0);
-    }
-
-    stop_client();
 
     return 0;
 }

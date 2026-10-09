@@ -1,224 +1,105 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <pthread.h>
 #include <signal.h>
-#include <arpa/inet.h>
+#include <string.h>
 
+#include <sys/ipc.h>
+#include <sys/msg.h>
+
+#include "common.h"
 #include "server_utils.h"
-#include "server_handlers.h"
 
-// Mutex globalny do synchronizacji dostępu do tablicy clients[]
-pthread_mutex_t clients_mutex =
-    PTHREAD_MUTEX_INITIALIZER;
+// id kolejki serwera
+int server_queue;
 
 
-// wątek pingujący klientów
-void *alive_thread(void *arg) {
+// ===== handler ctrl+c =====
+void sigint_handler(int sig) {
 
-    while (1) {
+    // usunięcie kolejki serwera
+    msgctl(server_queue, IPC_RMID, NULL);
 
-        sleep(10);
+    // usunięcie klientów
+    remove_clients();
 
-        // Blokuję dostęp do clients
-        pthread_mutex_lock(&clients_mutex);
+    printf("\nSerwer zamknięty\n");
 
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-
-            if (clients[i].active) {
-
-                // jeśli klient nie odpowiedział => zamykam socketa 
-                if (clients[i].alive == 0) {
-
-                    printf("Klient %s nie odpowiada\n",
-                           clients[i].name);
-
-                    close(clients[i].sock);
-                    clients[i].active = 0;
-                }
-
-                else {
-
-                    // zerowanie flagi alive
-                    clients[i].alive = 0;
-
-                    // wysłanie pinga
-                    send_to_client(clients[i].sock,
-                                   "PING");
-                }
-            }
-        }
-
-        // Odblokowuję mutex
-        pthread_mutex_unlock(&clients_mutex);
-    }
-
-    return NULL;
+    exit(0);
 }
 
 
-// obsługa klienta
-void *client_thread(void *arg) {
+int main() {
 
-    int sock = *(int *)arg; // Pobieram gniazdo klienta
-    free(arg); // Zwalniam pamięć zaalokowaną na wskaźnik
+    // obsługa ctrl+c
+    signal(SIGINT, sigint_handler);
 
-    char buffer[MAX_MSG];
+    // utworzenie klucza serwera
+    key_t key = ftok(
+        SERVER_PATH,
+        PROJECT_ID
+    );
 
-    // pierwsza wiadomość = nazwa klienta
-    int bytes = recv(sock, buffer, MAX_MSG - 1, 0);
-    buffer[bytes] = '\0';
-    
+    // utworzenie kolejki serwera
+    server_queue = msgget(
+        key,
+        IPC_CREAT | 0666
+    );
 
-    // Dodaję klienta do globalnej tablicy clients[]
-    int idx = add_client(sock, buffer);
+    printf("Serwer uruchomiony\n");
 
-    // Jeśli klient o tej nazwie już istnieje => zamykam połączenie
-    if (idx == -1) {
+    message msg;
 
-        send_to_client(sock,
-                       "ERROR: nazwa zajęta\n");
-
-        close(sock);
-
-        return NULL;
-    }
-
-    // Zgłoszenie nowego koienta
-    printf("Nowy klient: %s\n",
-           clients[idx].name);
-
-
-    // Pętla odbierająca komendy od klienta 
+    // główna pętla serwera
     while (1) {
 
-
-        memset(buffer, 0, MAX_MSG);
-
-        int bytes = recv(sock,
-                         buffer,
-                         MAX_MSG,
-                         0);
-
-        if (bytes <= 0) {
-
-            remove_client(sock);
-            break;
-        }
-        
-        // Parsuję komendę i odpowiednio ją obsługuję 
-        switch(parse_command(buffer)) {
-
-            case CMD_LIST:
-                handle_list(sock);
-                break;
-
-            case CMD_2ALL:
-                handle_2all(idx,
-                            sock,
-                            buffer);
-                break;
-
-            case CMD_2ONE:
-                handle_2one(idx,
-                            buffer);
-                break;
-
-            case CMD_STOP:
-                handle_stop(sock);
-                return NULL;
-
-            case CMD_ALIVE:
-                handle_alive(sock);
-                break;
-
-            default:
-                send_to_client(sock,
-                               "Nieznane polecenie\n");
-        }
-    }
-
-    return NULL;
-}
-
-
-int main(int argc, char *argv[]) {
-    // zapisywanie do zamkniętego gniazda nie przerywa programu
-    signal(SIGPIPE, SIG_IGN);
-
-    // Weryfikacja argumentu
-    if (argc != 2) {
-
-        printf("Usage: %s PORT\n",
-               argv[0]);
-
-        return 1;
-    }
-
-
-    // ==== Uruchamiam serwer ==== 
-    int port = atoi(argv[1]);
-
-    int server_sock =
-    socket(AF_INET,
-               SOCK_STREAM,
-               0);
-
-    struct sockaddr_in server_addr;
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-
-    bind(server_sock,
-         (struct sockaddr *)&server_addr,
-         sizeof(server_addr));
-
-    listen(server_sock,
-           MAX_CLIENTS); // Maksymalna kolejka oczekujących połączeń
-
-    printf("Serwer działa na porcie %d\n",
-           port);
-    // == Serewer uruchomiony i nasłuchuje na porcie ====
-
-
-    // uruchomienie wątku ALIVE
-    pthread_t alive_tid;
-    pthread_create(&alive_tid,
-                   NULL,
-                   alive_thread,
-                   NULL);
-
-
-    // Główna pętla serwera – akceptuje nowych klientów
-    while (1) {
-
-        struct sockaddr_in client_addr;
-
-        socklen_t client_len =
-            sizeof(client_addr);
-
-        int client_sock = accept(
-            server_sock,
-            (struct sockaddr *)&client_addr,
-            &client_len
+        // odbiór wiadomości
+        msgrcv(
+            server_queue,
+            &msg,
+            sizeof(message) - sizeof(long),
+            0,
+            0
         );
 
-        // Alokuję pamięć na gniazdo, żeby przekazać je do wątku
-        int *pclient = malloc(sizeof(int));
-        *pclient = client_sock;
+        // ===== OBSŁUGA INIT =====
+        if (msg.mtype == INIT) {
 
-        pthread_t tid;
+            // dodanie klienta
+            int id = add_client(msg.queue_key);
 
-        pthread_create(
-            &tid,
-            NULL,
-            client_thread,
-            pclient
-        );
+            printf("Nowy klient: %d\n", id);
 
-        pthread_detach(tid); // Odłączam wątek – sam zwolni zasoby po zakończeniu
+            // wiadomość zwrotna
+            message reply;
+
+            reply.mtype = INIT;
+            reply.sender_id = id;
+
+            // otwarcie kolejki klienta
+            int client_queue =
+                msgget(msg.queue_key, 0);
+
+            // odesłanie ID klienta
+            msgsnd(
+                client_queue,
+                &reply,
+                sizeof(message) - sizeof(long),
+                0
+            );
+        }
+
+        // ===== normalna wiadomość =====
+        else if (msg.mtype == MSG) {
+
+            printf(
+                "Od %d: %s",
+                msg.sender_id,
+                msg.text
+            );
+
+            // rozesłanie wiadomości
+            send_to_all(&msg);
+        }
     }
 
     return 0;

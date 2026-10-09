@@ -1,64 +1,29 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
+#include <sys/msg.h>
 
 #include "common.h"
 
-extern int sock;
+// ===== odbieranie wiadomości =====
+void receive_messages(int queue_id) {
 
-
-// zamknięcie klienta
-void stop_client() {
-
-    send(sock,
-         "STOP",
-         4,
-         0);
-
-    close(sock);
-
-    exit(0);
-}
-
-
-// odbieranie wiadomości
-void *receive_thread(void *arg) {
-
-    char buffer[MAX_MSG];
+    message msg;
 
     while (1) {
 
-        memset(buffer,
-               0,
-               MAX_MSG);
+        // odbiór wiadomości
+        msgrcv(
+            queue_id,
+            &msg,
+            sizeof(message) - sizeof(long),
+            0,
+            0
+        );
 
-        int bytes = recv(sock,
-                         buffer,
-                         MAX_MSG,
-                         0);
-
-        if (bytes <= 0) {
-
-            printf("Rozłączono z serwerem\n");
-
-            exit(0);
-        }
-
-        // odpowiedź na ping serwera
-        if (strcmp(buffer, "PING") == 0) {
-
-            send(sock,
-                 "ALIVE",
-                 5,
-                 0);
-        }
-
-        else {
-            printf("%s\n", buffer);
-        }
+        // wypisanie wiadomości
+        printf(
+            "Klient %d: %s",
+            msg.sender_id,
+            msg.text
+        );
     }
-
-    return NULL;
 }
